@@ -3,22 +3,19 @@
 # uvicorn[standard]==0.30.1
 # pydantic==2.7.4
 
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
 from typing import List, Dict, Optional
 
 # --- 1. FastAPI Application Initialization ---
 # Create an instance of the FastAPI application.
-# This is the main entry point for your API.
 app = FastAPI(
     title="Supplier API",
-    description="A boilerplate backend for managing supplier information.",
-    version="0.1.0",
+    description="A boilerplate backend for managing supplier information. Now with filtering!",
+    version="0.1.1", # Updated version to reflect changes
 )
 
 # --- 2. Data Models (using Pydantic) ---
-# Pydantic models define the structure of your data.
-# They are used for request body validation, response serialization, and documentation.
 
 class ContactPerson(BaseModel):
     """
@@ -41,10 +38,7 @@ class SupplierBase(BaseModel):
 class SupplierCreate(SupplierBase):
     """
     Model for creating a new supplier.
-    Inherits from SupplierBase.
     """
-    # No additional fields needed for creation beyond SupplierBase,
-    # but you might add unique constraints or initial values here if applicable.
     pass
 
 class Supplier(SupplierBase):
@@ -54,9 +48,7 @@ class Supplier(SupplierBase):
     id: int = Field(..., example=1, description="Unique identifier for the supplier.")
 
     class Config:
-        # This nested class provides configurations for Pydantic.
-        # It's useful for integration with ORMs or other systems that don't return dicts.
-        from_attributes = True # Allow Pydantic to read data from attributes (e.g., for SQLAlchemy models)
+        from_attributes = True
         json_schema_extra = {
             "example": {
                 "id": 1,
@@ -72,41 +64,72 @@ class Supplier(SupplierBase):
         }
 
 # --- 3. In-memory "Database" (for demonstration purposes) ---
-# In a real application, this would be a database connection (PostgreSQL, MySQL, MongoDB, etc.).
-# This dictionary simulates storing supplier records.
+# Seed with some initial data for testing the filtering
 fake_db: Dict[int, Supplier] = {}
 next_id = 1
 
+# Add some sample data
+def add_sample_suppliers():
+    global next_id
+    suppliers_data = [
+        {"name": "Acme Manufacturing", "industry": "Manufacturing", "contact_person": {"name": "Alice Brown", "email": "alice@acme.com"}, "is_active": True},
+        {"name": "Beta Software Solutions", "industry": "Software", "contact_person": {"name": "Bob Green", "email": "bob@beta.com"}, "is_active": True},
+        {"name": "Gamma Logistics", "industry": "Logistics", "contact_person": {"name": "Charlie White", "email": "charlie@gamma.com"}, "is_active": False},
+        {"name": "Delta Components", "industry": "Manufacturing", "contact_person": {"name": "Diana Prince", "email": "diana@delta.com"}, "is_active": True},
+        {"name": "Epsilon Services", "industry": "IT Services", "contact_person": {"name": "Eve Adams", "email": "eve@epsilon.com"}, "is_active": False},
+    ]
+    for data in suppliers_data:
+        supplier_obj = Supplier(id=next_id, **data)
+        fake_db[next_id] = supplier_obj
+        next_id += 1
+
+add_sample_suppliers()
+
+
 # --- 4. Dependency Injection ---
-# FastAPI's dependency injection system helps manage shared resources.
-# Here, we'll use it to simulate getting the "database" connection.
 def get_db():
     """
     Dependency that yields the fake database.
-    In a real app, this would set up and tear down a DB session.
     """
     try:
         yield fake_db
     finally:
-        # Cleanup code can go here if needed (e.g., closing DB connection)
         pass
 
 # --- 5. API Endpoints ---
-# Define the routes and their associated logic.
 
 @app.get("/")
 async def read_root():
     """
     Root endpoint for a simple health check or welcome message.
     """
-    return {"message": "Welcome to the Supplier API!"}
+    return {"message": "Welcome to the Supplier API! Now with filtering capabilities."}
 
 @app.get("/suppliers/", response_model=List[Supplier])
-async def get_all_suppliers(db: Dict[int, Supplier] = Depends(get_db)):
+async def get_all_suppliers(
+    industry: Optional[str] = Query(None, description="Filter suppliers by industry."),
+    is_active: Optional[bool] = Query(None, description="Filter suppliers by active status."),
+    db: Dict[int, Supplier] = Depends(get_db)
+):
     """
-    Retrieve a list of all registered suppliers.
+    Retrieve a list of all registered suppliers, with optional filtering.
+    You can filter by 'industry' and/or 'is_active' status.
     """
-    return list(db.values())
+    filtered_suppliers = list(db.values())
+
+    if industry:
+        # Case-insensitive and partial match for industry
+        industry_lower = industry.lower()
+        filtered_suppliers = [
+            s for s in filtered_suppliers if industry_lower in s.industry.lower()
+        ]
+
+    if is_active is not None: # Check explicitly for True/False
+        filtered_suppliers = [
+            s for s in filtered_suppliers if s.is_active == is_active
+        ]
+
+    return filtered_suppliers
 
 @app.get("/suppliers/{supplier_id}", response_model=Supplier)
 async def get_supplier_by_id(supplier_id: int, db: Dict[int, Supplier] = Depends(get_db)):
@@ -143,12 +166,11 @@ async def update_supplier(
         raise HTTPException(status_code=404, detail="Supplier not found")
 
     existing_supplier = db[supplier_id]
-    # Update fields from the incoming data
-    updated_data = updated_supplier.model_dump(exclude_unset=True) # exclude_unset ensures only provided fields are updated
+    updated_data = updated_supplier.model_dump(exclude_unset=True)
     for key, value in updated_data.items():
-        setattr(existing_supplier, key, value) # This updates the Pydantic model directly.
+        setattr(existing_supplier, key, value)
         
-    db[supplier_id] = existing_supplier # Reassign updated supplier to update in db
+    db[supplier_id] = existing_supplier
     return existing_supplier
 
 @app.delete("/suppliers/{supplier_id}", status_code=204)
@@ -163,7 +185,6 @@ async def delete_supplier(supplier_id: int, db: Dict[int, Supplier] = Depends(ge
     del db[supplier_id]
     return {"message": "Supplier deleted successfully"}
 
-
 # --- 6. How to run the application (using Uvicorn) ---
 # To run this API, save the code as `main.py` (or any other name).
 # Ensure you have FastAPI and Uvicorn installed:
@@ -172,7 +193,5 @@ async def delete_supplier(supplier_id: int, db: Dict[int, Supplier] = Depends(ge
 # Then run from your terminal in the same directory:
 # uvicorn main:app --reload
 
-# The `--reload` flag enables auto-reloading of the server when code changes are detected.
 # You can then access the API at http://127.0.0.1:8000
 # And the interactive documentation (Swagger UI) at http://127.0.0.1:8000/docs
-# Or ReDoc documentation at http://127.0.0.1:8000/redoc
